@@ -6869,6 +6869,50 @@ HWY_API VFromD<D> TwoTablesLookupLanes(D /*d*/, VFromD<D> a, VFromD<D> b,
 }
 #endif
 
+// ------------------------------ Lookup8
+
+template <class D, typename T = TFromD<D>, class VI, HWY_IF_T_SIZE(T, 4)>
+HWY_INLINE Vec<D> Lookup8(D d, const T* table, VI indices) {
+  HWY_IF_CONSTEXPR(HWY_IS_DEBUG_BUILD) {
+    DFromV<VI> di;
+    HWY_DASSERT(Lanes(di) >= 4);
+    HWY_DASSERT(AllTrue(di, Lt(indices, Set(di, 8))));
+  }
+
+  HWY_IF_CONSTEXPR(!HWY_HAVE_SCALABLE) {
+    // Fixed-size vectors: we know they are >= 128 bit, so either one or two
+    // tables are sufficient.
+    HWY_IF_CONSTEXPR(MaxLanes(d) >= 8) {
+      CappedTag<T, 8> d8;
+      auto t0 = ResizeBitCast(d, Load(d8, table));
+      return TableLookupLanes(t0, IndicesFromVec(d, indices));
+    }
+    HWY_IF_CONSTEXPR(MaxLanes(d) < 8) {
+      FixedTag<T, 4> d4;
+      auto t0 = ResizeBitCast(d, Load(d4, table));
+      auto t1 = ResizeBitCast(d, Load(d4, table + 4));
+      return TwoTablesLookupLanes(d, t0, t1, IndicesFromVec(d, indices));
+    }
+  }
+  HWY_IF_CONSTEXPR(HWY_HAVE_SCALABLE) {
+    // Scalable: to avoid runtime branching, use a two-table instruction, but
+    // depending on vector size, the second table may be unused.
+    CappedTag<T, 8> d8;
+    const size_t N = Lanes(d8);
+
+    // If N >= 8, offset is 0; one table is sufficient and the second will be
+    // unused. To avoid overrun, its load should start from the same address.
+    // Otherwise, if N == 4 and offset == 4.
+    const size_t offset = N & 7;
+    HWY_DASSERT(offset == 0 || offset == 4);
+
+    const Vec<D> t0 = ResizeBitCast(d, Load(d8, table));
+    const Vec<D> t1 = ResizeBitCast(d, LoadU(d8, table + offset));
+
+    return TwoTablesLookupLanes(d, t0, t1, IndicesFromVec(d, indices));
+  }
+}
+
 // ------------------------------ Reverse2, Reverse4, Reverse8 (8-bit)
 
 #if (defined(HWY_NATIVE_REVERSE2_8) == defined(HWY_TARGET_TOGGLE)) || HWY_IDE
