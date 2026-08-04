@@ -20,7 +20,7 @@
 #include <vector>
 
 #undef HWY_TARGET_INCLUDE
-#define HWY_TARGET_INCLUDE "hwy/examples/game_of_life.cc"
+#define HWY_TARGET_INCLUDE "hwy/examples/game_of_life_bits.cc"
 
 #include "hwy/foreach_target.h"  // IWYU pragma: keep
 // Put after foreach_target.h to avoid redefinition errors
@@ -132,26 +132,6 @@ bool ValidateBit(const uint8_t* HWY_RESTRICT ref_byte,
   hwy::AlignedVector<uint8_t> temp(NU8);
   size_t i = 0;
   bool no_mismatches = true;
-  std::cout << "Calculated" << std::endl;
-  for (size_t j = 0; j < 2; j++) {
-    for (size_t i = 0; i < nx; i++) {
-      const size_t arr = static_cast<size_t>((i + j*nx) / (8 * sizeof(uint64_t)));
-      const size_t bit = static_cast<size_t>((i + j*nx) % (8 * sizeof(uint64_t)));
-      const uint64_t one = 1;
-      uint16_t val = (out[arr] & static_cast<uint64_t>(one << bit))
-                    ? static_cast<uint16_t>(1)
-                    : static_cast<uint16_t>(0);
-      std::cout << val;
-    }
-    std::cout << std::endl;
-  }
-  std::cout << "Reference" << std::endl;
-  for (size_t j = 0; j < 2; j++) {
-    for (size_t i = 0; i < nx; i++) {
-      std::cout << static_cast<uint16_t>(ref_byte[i+j*nx]);
-    }
-    std::cout << std::endl;
-  }
   for (i = 0; i + NU8 <= nx * ny; i += NU8) {
     for (size_t j = 0; j < NU8; j++) {
       const size_t arr = static_cast<size_t>((i + j) / (8 * sizeof(uint64_t)));
@@ -462,7 +442,6 @@ void NewStateSimdBit(const uint64_t* HWY_RESTRICT in,
   size_t block_size = 8 * sizeof(uint64_t);
   size_t vec_size = NU64 * block_size;
   for (size_t i = 0; i + vec_size <= nx ; i += vec_size) {
-	  std::cout << "Processing " << i << std::endl;
     for (size_t j = 0; j < ny; j++) {
       previous_row = hn::LoadU(du64, in + (((ny - 1 + j) % ny) * nx + i)/
                                           block_size);
@@ -475,7 +454,7 @@ void NewStateSimdBit(const uint64_t* HWY_RESTRICT in,
         hn::ShiftLeft<1>(previous_row),
         hn::ShiftRight<63>(hn::Slide1UpOr(in[ind], du64, previous_row)));
       // previous row right
-      ind = (((ny - 1 + j) % ny) * nx + ((block_size + i) % nx)) / block_size;
+      ind = (((ny - 1 + j) % ny) * nx + ((vec_size + i) % nx)) / block_size;
       previous_row_right_shift = hn::Or(
         hn::ShiftRight<1>(previous_row),
         hn::ShiftLeft<63>(hn::Slide1DownOr(in[ind], du64, previous_row)));
@@ -485,7 +464,7 @@ void NewStateSimdBit(const uint64_t* HWY_RESTRICT in,
         hn::ShiftLeft<1>(current_row),
         hn::ShiftRight<63>(hn::Slide1UpOr(in[ind], du64, current_row)));
       // right
-      ind = (j * nx + ((block_size + i) % nx)) / block_size;
+      ind = (j * nx + (vec_size + i) % nx ) / block_size;
       right_shift = hn::Or(
         hn::ShiftRight<1>(current_row),
         hn::ShiftLeft<63>(hn::Slide1DownOr(in[ind], du64, current_row)));
@@ -495,7 +474,7 @@ void NewStateSimdBit(const uint64_t* HWY_RESTRICT in,
         hn::ShiftLeft<1>(next_row),
         hn::ShiftRight<63>(hn::Slide1UpOr(in[ind], du64, next_row)));
       // next row right
-      ind = (((1 + j) % ny) * nx + ((block_size + i) % nx)) / block_size;
+      ind = (((1 + j) % ny) * nx + (vec_size + i) % nx ) / block_size;
       next_row_right_shift = hn::Or(
         hn::ShiftRight<1>(next_row),
         hn::ShiftLeft<63>(hn::Slide1DownOr(in[ind], du64, next_row)));
@@ -718,8 +697,8 @@ void NewStateScalarBit(const uint64_t* HWY_RESTRICT in,
       // method may have more favourable data accesses patterns.
       out[(j*nx + i)/var_size] =
         UpdateBitSortingNetwork(previous_left, previous, previous_right,
-                        current_right, next_right, next, next_left,
-                        current_left, current);
+                                current_right, next_right, next, next_left,
+                                current_left, current);
     }
   }
   return;
@@ -839,13 +818,31 @@ void GameOfLifeSimdBit(uint64_t* HWY_RESTRICT a, uint64_t* HWY_RESTRICT b,
   return;
 }
 
+void PrintResults(const bool check_validated, const bool validated,
+                  const std::string test_type, const double t_0,
+                  const double t_1, const size_t nx, const size_t ny,
+                  const size_t iterations) {
+  const double dt = 1000.0 * (t_1 - t_0);
+  const double GUPS =
+      static_cast<double>(nx * ny * iterations) / (1000000.0 * dt);
+  if (check_validated) {
+    if (validated) {
+      std::cout << test_type << " validated" << std::endl;
+    } else {
+      std::cout << test_type << " validation failed" << std::endl;
+    }
+  }
+  std::cout << test_type << " execution time: " << dt << " ms" << std::endl;
+  std::cout << test_type << " speed: " << GUPS
+            << " Giga site updates per second" << std::endl;
+}
 
 int Run() {
-  const size_t nx = 256; // For ease of processing, make divisible by 64
-  const size_t ny = 8;  // Want to have at least 3 rows
+  const size_t nx = 512;  // For ease of processing, make divisible by 64
+  const size_t ny = 512;  // Want to have at least 3 rows
   // Allocate a little larger than needed
   const size_t uint64_size = 10 + (nx * ny) / (8 * sizeof(uint64_t));
-  const size_t iterations = 1;
+  const size_t iterations = 10;
   bool validated = true;
   AlignedFreeUniquePtr<uint64_t[]> a_scalar_bit =
       AllocateAligned<uint64_t>(uint64_size);
@@ -855,10 +852,10 @@ int Run() {
       AllocateAligned<uint64_t>(uint64_size);
   AlignedFreeUniquePtr<uint64_t[]> b_simd_bit =
       AllocateAligned<uint64_t>(uint64_size);
-  hwy::AlignedVector<uint8_t> a_scalar_byte(10 + nx * ny);
-  hwy::AlignedVector<uint8_t> b_scalar_byte(10 + nx * ny);
-  hwy::AlignedVector<uint8_t> a_simd_byte(10 + nx * ny);
-  hwy::AlignedVector<uint8_t> b_simd_byte(10 + nx * ny);
+  hwy::AlignedVector<uint8_t> a_scalar_byte(nx * ny);
+  hwy::AlignedVector<uint8_t> b_scalar_byte(nx * ny);
+  hwy::AlignedVector<uint8_t> a_simd_byte(nx * ny);
+  hwy::AlignedVector<uint8_t> b_simd_byte(nx * ny);
 
   HWY_DYNAMIC_DISPATCH(InitializeState)(a_scalar_bit.get(), a_simd_bit.get(),
                                         a_scalar_byte.data(),
@@ -870,10 +867,9 @@ int Run() {
                        iterations);
   // Record end time and print execution time
   const double t_scalar_byte_1 = hwy::platform::Now();
-  const double dt_scalar_byte = 1000.0 * (t_scalar_byte_1 - t_scalar_byte_0);
-  std::cout << "Scalar Byte Execution Time: " << dt_scalar_byte << " ms"
-            << std::endl;
-  // Record start time
+  PrintResults(false, false, "Scalar byte", t_scalar_byte_0, t_scalar_byte_1, nx, ny,
+               iterations);
+ // Record start time
   const double t_scalar_bit_0 = hwy::platform::Now();
   GameOfLifeScalarBit(a_scalar_bit.get(), b_scalar_bit.get(), nx, ny,
                       iterations);
@@ -886,12 +882,8 @@ int Run() {
             a_scalar_byte.data(), a_scalar_bit.get(), nx, ny)
       : scalar_bit_validated = HWY_DYNAMIC_DISPATCH(ValidateBit)(
             b_scalar_byte.data(), b_scalar_bit.get(), nx, ny);
-  std::cout << "Scalar Bit Execution time: " << dt_scalar_bit << " ms"
-            << std::endl;
-  if (!scalar_bit_validated) {
-    std::cout << "Scalar Bit Validation Failed" << std::endl;
-    validated &= scalar_bit_validated;
-  }
+  PrintResults(true, scalar_bit_validated, "Scalar bit", t_scalar_bit_0, t_scalar_bit_1, nx, ny, iterations);
+  validated &= scalar_bit_validated;
   // Record start time
   const double t_simd_byte_0 = hwy::platform::Now();
   GameOfLifeSimdByte(a_simd_byte.data(), b_simd_byte.data(), nx, ny,
@@ -905,12 +897,8 @@ int Run() {
             a_scalar_byte.data(), a_simd_byte.data(), nx, ny)
       : simd_byte_validated = HWY_DYNAMIC_DISPATCH(ValidateByte)(
             b_scalar_byte.data(), b_simd_byte.data(), nx, ny);
-  std::cout << "SIMD Byte Execution Time: " << dt_simd_byte << " ms"
-            << std::endl;
-  if (!simd_byte_validated) {
-    std::cout << "SIMD Byte Validation Failed" << std::endl;
-    validated &= simd_byte_validated;
-  }
+  PrintResults(true, simd_byte_validated, "Simd byte", t_simd_byte_0, t_simd_byte_1, nx, ny, iterations);
+  validated &= simd_byte_validated;
   // Record start time
   const double t_simd_bit_0 = hwy::platform::Now();
   GameOfLifeSimdBit(a_simd_bit.get(), b_simd_bit.get(), nx, ny,
@@ -922,14 +910,10 @@ int Run() {
   ((iterations % 2) == 0)
       ? simd_bit_validated = HWY_DYNAMIC_DISPATCH(ValidateBit)(
             a_scalar_byte.data(), a_simd_bit.get(), nx, ny)
-      : scalar_bit_validated = HWY_DYNAMIC_DISPATCH(ValidateBit)(
+      : simd_bit_validated = HWY_DYNAMIC_DISPATCH(ValidateBit)(
             b_scalar_byte.data(), b_simd_bit.get(), nx, ny);
-  std::cout << "Simd Bit Execution time: " << dt_simd_bit << " ms"
-            << std::endl;
-  if (!simd_bit_validated) {
-    std::cout << "Simd Bit Validation Failed" << std::endl;
-    validated &= simd_bit_validated;
-  }
+  PrintResults(true, simd_bit_validated, "Simd bit", t_simd_bit_0, t_simd_bit_1, nx, ny, iterations);
+  validated &= simd_bit_validated;
  
   if (validated) {
     return 0;
